@@ -38,7 +38,7 @@ struct AppSettings {
     python_path: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize, Clone)]
 struct ProjectInfo {
     name: String,
     path: String,
@@ -49,7 +49,10 @@ struct ProjectInfo {
 struct OpenProjectResult {
     project: ProjectInfo,
     media_path: Option<String>,
+    audio_path: Option<String>,
     subtitles: Value,
+    style: Value,
+    editor: Value,
 }
 
 #[derive(Serialize)]
@@ -121,6 +124,16 @@ struct RunAsrRequest {
 struct SaveSubtitlesRequest {
     project_path: String,
     subtitles: Value,
+}
+
+#[derive(Deserialize)]
+struct SaveProjectStateRequest {
+    project_path: String,
+    media_path: Option<String>,
+    audio_path: Option<String>,
+    subtitles: Value,
+    style: Value,
+    editor: Value,
 }
 
 #[derive(Deserialize)]
@@ -518,12 +531,22 @@ fn create_project(request: CreateProjectRequest) -> Result<ProjectInfo, String> 
         "media": null,
         "subtitles": [],
         "style": {
-            "font_family": "Microsoft YaHei",
-            "font_size": 48,
+            "fontFamily": "Microsoft YaHei",
+            "fontSize": 48,
             "color": "#FFFFFF",
-            "stroke_color": "#000000",
-            "stroke_width": 4
-        }
+            "strokeColor": "#000000",
+            "strokeWidth": 2,
+            "strokeMode": "outer",
+            "opacity": 1,
+            "positionX": 0,
+            "positionY": 13
+        },
+        "editor": {
+            "canvasPreset": "source",
+            "selectedModel": "qwen3-asr-06b",
+            "asrSummary": null
+        },
+        "audio_path": null
     });
 
     fs::write(
@@ -542,7 +565,8 @@ fn write_project_manifest(project_dir: &Path, project: &ProjectInfo, media_path:
         "version": 1,
         "project": { "name": project.name, "path": project.path, "created_at": project.created_at },
         "media_path": media_path,
-        "subtitles_path": "subtitles/subtitles.json"
+        "subtitles_path": "subtitles/subtitles.json",
+        "project_data_path": "project.json"
     });
     fs::write(project_dir.join("project.captionflow"), serde_json::to_string_pretty(&manifest).map_err(|error| error.to_string())?)
         .map_err(|error| error.to_string())
@@ -551,14 +575,20 @@ fn write_project_manifest(project_dir: &Path, project: &ProjectInfo, media_path:
 #[tauri::command]
 fn save_project_media(project_path: String, media_path: String) -> Result<(), String> {
     let project_dir = PathBuf::from(&project_path);
-    let metadata: Value = serde_json::from_str(&fs::read_to_string(project_dir.join("project.json")).map_err(|error| error.to_string())?)
+    let mut metadata: Value = serde_json::from_str(&fs::read_to_string(project_dir.join("project.json")).map_err(|error| error.to_string())?)
         .map_err(|error| error.to_string())?;
     let project = ProjectInfo {
         name: metadata.get("name").and_then(Value::as_str).unwrap_or("未命名字幕项目").to_string(),
         path: project_path,
         created_at: metadata.get("created_at").and_then(Value::as_u64).unwrap_or(0),
     };
-    write_project_manifest(&project_dir, &project, Some(media_path))
+    metadata["media"] = serde_json::json!({ "path": media_path });
+    fs::write(
+        project_dir.join("project.json"),
+        serde_json::to_string_pretty(&metadata).map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| error.to_string())?;
+    write_project_manifest(&project_dir, &project, metadata.pointer("/media/path").and_then(Value::as_str).map(str::to_string))
 }
 
 #[tauri::command]
@@ -573,7 +603,11 @@ fn open_project_file(path: String) -> Result<OpenProjectResult, String> {
         return Err("这不是 CaptionFlow 工程文件".to_string());
     }
     let project_dir = file.parent().ok_or_else(|| "工程文件路径无效".to_string())?;
-    let project_data = manifest.get("project").ok_or_else(|| "工程缺少项目信息".to_string())?;
+    let metadata = fs::read_to_string(project_dir.join(manifest.get("project_data_path").and_then(Value::as_str).unwrap_or("project.json")))
+        .ok()
+        .and_then(|content| serde_json::from_str::<Value>(&content).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+    let project_data = metadata.get("name").map(|_| &metadata).or_else(|| manifest.get("project")).ok_or_else(|| "工程缺少项目信息".to_string())?;
     let project = ProjectInfo {
         name: project_data.get("name").and_then(Value::as_str).unwrap_or("未命名字幕项目").to_string(),
         path: project_dir.to_string_lossy().to_string(),
@@ -583,8 +617,28 @@ fn open_project_file(path: String) -> Result<OpenProjectResult, String> {
     let subtitles = fs::read_to_string(project_dir.join(subtitles_path))
         .ok()
         .and_then(|content| serde_json::from_str(&content).ok())
+        .or_else(|| metadata.get("subtitles").cloned())
         .unwrap_or_else(|| Value::Array(Vec::new()));
-    Ok(OpenProjectResult { project, media_path: manifest.get("media_path").and_then(Value::as_str).map(str::to_string), subtitles })
+    let media_path = metadata.pointer("/media/path").and_then(Value::as_str)
+        .or_else(|| manifest.get("media_path").and_then(Value::as_str))
+        .map(str::to_string);
+    Ok(OpenProjectResult {
+        project,
+        media_path,
+        audio_path: metadata.get("audio_path").and_then(Value::as_str).map(str::to_string),
+        subtitles,
+        style: metadata.get("style").cloned().unwrap_or_else(|| serde_json::json!({})),
+        editor: metadata.get("editor").cloned().unwrap_or_else(|| serde_json::json!({})),
+    })
+}
+
+#[tauri::command]
+fn get_launch_project_file() -> Option<String> {
+    env::args()
+        .skip(1)
+        .map(PathBuf::from)
+        .find(|path| path.extension().and_then(|extension| extension.to_str()).map(|extension| extension.eq_ignore_ascii_case("captionflow")).unwrap_or(false) && path.is_file())
+        .map(|path| path.to_string_lossy().to_string())
 }
 
 #[tauri::command]
@@ -1113,6 +1167,53 @@ fn save_project_subtitles(request: SaveSubtitlesRequest) -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+fn save_project_state(request: SaveProjectStateRequest) -> Result<(), String> {
+    if !request.subtitles.is_array() || !request.style.is_object() || !request.editor.is_object() {
+        return Err("工程状态数据格式无效".to_string());
+    }
+
+    let project_dir = PathBuf::from(&request.project_path);
+    if !project_dir.is_dir() {
+        return Err("项目目录不存在".to_string());
+    }
+
+    let metadata_path = project_dir.join("project.json");
+    let mut metadata: Value = fs::read_to_string(&metadata_path)
+        .ok()
+        .and_then(|content| serde_json::from_str(&content).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+    let project = ProjectInfo {
+        name: metadata.get("name").and_then(Value::as_str).unwrap_or("未命名字幕项目").to_string(),
+        path: project_dir.to_string_lossy().to_string(),
+        created_at: metadata.get("created_at").and_then(Value::as_u64).unwrap_or(0),
+    };
+
+    let subtitles_dir = project_dir.join("subtitles");
+    fs::create_dir_all(&subtitles_dir).map_err(|error| error.to_string())?;
+    fs::write(
+        subtitles_dir.join("subtitles.json"),
+        serde_json::to_string_pretty(&request.subtitles).map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| error.to_string())?;
+
+    metadata["name"] = Value::String(project.name.clone());
+    metadata["path"] = Value::String(project.path.clone());
+    metadata["created_at"] = Value::from(project.created_at);
+    metadata["version"] = Value::from(2);
+    metadata["media"] = request.media_path.clone().map(|path| serde_json::json!({ "path": path })).unwrap_or(Value::Null);
+    metadata["audio_path"] = request.audio_path.clone().map(Value::String).unwrap_or(Value::Null);
+    metadata["subtitles"] = request.subtitles;
+    metadata["style"] = request.style;
+    metadata["editor"] = request.editor;
+    fs::write(
+        &metadata_path,
+        serde_json::to_string_pretty(&metadata).map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| error.to_string())?;
+    write_project_manifest(&project_dir, &project, request.media_path)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -1121,6 +1222,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             create_project,
             open_project_file,
+            get_launch_project_file,
             rename_project,
             delete_project,
             save_project_media,
@@ -1134,6 +1236,7 @@ pub fn run() {
             run_qwen_asr,
             save_settings,
             save_project_subtitles,
+            save_project_state,
             scan_system_fonts
         ])
         .run(tauri::generate_context!())

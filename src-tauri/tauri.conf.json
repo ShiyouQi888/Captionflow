@@ -52,6 +52,15 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
+    "fileAssociations": [
+      {
+        "ext": ["captionflow"],
+        "name": "CaptionFlow Project",
+        "description": "CaptionFlow 字幕工程文件",
+        "role": "Editor",
+        "mimeType": "application/x-captionflow-project"
+      }
+    ],
     "windows": {
       "nsis": {
         "languages": ["SimpChinese"],

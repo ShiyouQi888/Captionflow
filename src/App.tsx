@@ -43,6 +43,7 @@ import {
   extractAudio,
   exportCaptions,
   getAppStatus,
+  getLaunchProjectFile,
   getSettings,
   openLocalProject,
   installDefaultModels,
@@ -51,7 +52,7 @@ import {
   runQwenAsr,
   scanSystemFonts,
   saveSettings,
-  saveProjectSubtitles,
+  saveProjectState,
   saveProjectMedia,
   toMediaUrl,
   type AppStatus,
@@ -110,6 +111,7 @@ function App() {
   const [selectedSubtitleId, setSelectedSubtitleId] = useState("");
   const [subtitleLines, setSubtitleLines] = useState<SubtitleLine[]>([]);
   const [subtitleStyle, setSubtitleStyle] = useState<SubtitleStyle>(defaultSubtitleStyle);
+  const [canvasPresetId, setCanvasPresetId] = useState<CanvasPreset["id"]>("source");
   const [selectedModelId, setSelectedModelId] = useState("qwen3-asr-06b");
   const [appStatus, setAppStatus] = useState<AppStatus | null>(null);
   const [appSettings, setAppSettings] = useState<AppSettings | null>(null);
@@ -167,6 +169,15 @@ function App() {
   }, []);
 
   useEffect(() => {
+    getLaunchProjectFile()
+      .then((path) => {
+        if (path) return openProjectFromPath(path);
+        return undefined;
+      })
+      .catch(() => undefined);
+  }, []);
+
+  useEffect(() => {
     if (!activeTask) return;
     const update = () => setTaskElapsed((Date.now() - activeTask.startedAt) / 1000);
     update();
@@ -175,14 +186,25 @@ function App() {
   }, [activeTask]);
 
   useEffect(() => {
-    if (!currentProject || subtitleLines.length === 0) return;
+    if (!currentProject) return;
     const timer = window.setTimeout(() => {
-      saveProjectSubtitles(currentProject.path, subtitleLines).catch((err) => {
+      saveProjectState({
+        projectPath: currentProject.path,
+        mediaPath: mediaInfo?.path,
+        audioPath,
+        subtitles: subtitleLines,
+        style: subtitleStyle as unknown as Record<string, unknown>,
+        editor: {
+          canvasPreset: canvasPresetId,
+          selectedModel: selectedModelId,
+          asrSummary,
+        },
+      }).catch((err) => {
         setError(err instanceof Error ? err.message : String(err));
       });
     }, Math.max(1, appSettings?.auto_save_seconds ?? 3) * 1_000);
     return () => window.clearTimeout(timer);
-  }, [appSettings?.auto_save_seconds, currentProject, subtitleLines]);
+  }, [appSettings?.auto_save_seconds, asrSummary, audioPath, canvasPresetId, currentProject, mediaInfo?.path, selectedModelId, subtitleLines, subtitleStyle]);
 
   async function handleSaveSettings(settings: AppSettings) {
     try {
@@ -241,6 +263,7 @@ function App() {
     setSubtitleLines([]);
     setSelectedSubtitleId("");
     setSubtitleStyle(defaultSubtitleStyle);
+    setCanvasPresetId("source");
     subtitleHistoryRef.current = [];
   }
 
@@ -329,20 +352,35 @@ function App() {
     }
   }
 
-  async function handleOpenProject() {
+  async function openProjectFromPath(path: string) {
     try {
-      const path = await chooseProjectFile();
-      if (!path) return;
       setError(null);
       setNotice("正在打开 CaptionFlow 工程...");
       const opened = await openLocalProject(path);
       const lines = resolveSubtitleOverlaps(opened.subtitles ?? []);
+      setMediaInfo(null);
       setCurrentProject(opened.project);
       setCreatedProjects((projects) => [opened.project, ...projects.filter((project) => project.path !== opened.project.path)]);
       setSubtitleLines(lines);
       setSelectedSubtitleId(lines[0]?.id ?? "");
-      setAudioPath(null);
-      setAsrSummary(null);
+      setAudioPath(opened.audio_path ?? null);
+      const restoredStyle = opened.style ?? {};
+      setSubtitleStyle({
+        ...defaultSubtitleStyle,
+        ...(restoredStyle as Partial<SubtitleStyle>),
+        fontFamily: typeof restoredStyle.fontFamily === "string" ? restoredStyle.fontFamily : (typeof restoredStyle.font_family === "string" ? restoredStyle.font_family : defaultSubtitleStyle.fontFamily),
+        fontSize: typeof restoredStyle.fontSize === "number" ? restoredStyle.fontSize : (typeof restoredStyle.font_size === "number" ? restoredStyle.font_size : defaultSubtitleStyle.fontSize),
+        strokeColor: typeof restoredStyle.strokeColor === "string" ? restoredStyle.strokeColor : (typeof restoredStyle.stroke_color === "string" ? restoredStyle.stroke_color : defaultSubtitleStyle.strokeColor),
+        strokeWidth: typeof restoredStyle.strokeWidth === "number" ? restoredStyle.strokeWidth : (typeof restoredStyle.stroke_width === "number" ? restoredStyle.stroke_width : defaultSubtitleStyle.strokeWidth),
+        strokeMode: restoredStyle.strokeMode === "inner" || restoredStyle.stroke_mode === "inner" ? "inner" : defaultSubtitleStyle.strokeMode,
+        positionX: typeof restoredStyle.positionX === "number" ? restoredStyle.positionX : (typeof restoredStyle.position_x === "number" ? restoredStyle.position_x : defaultSubtitleStyle.positionX),
+        positionY: typeof restoredStyle.positionY === "number" ? restoredStyle.positionY : (typeof restoredStyle.position_y === "number" ? restoredStyle.position_y : defaultSubtitleStyle.positionY),
+      });
+      const editor = opened.editor ?? {};
+      const restoredPreset = editor.canvasPreset;
+      setCanvasPresetId(restoredPreset === "landscape" || restoredPreset === "portrait" || restoredPreset === "square" || restoredPreset === "social" || restoredPreset === "source" ? restoredPreset : "source");
+      setSelectedModelId(typeof editor.selectedModel === "string" ? editor.selectedModel : (appSettings?.default_model ?? "qwen3-asr-06b"));
+      setAsrSummary(typeof editor.asrSummary === "string" ? editor.asrSummary : null);
       if (opened.media_path) {
         try {
           setMediaInfo(await probeMedia(opened.media_path));
@@ -360,6 +398,11 @@ function App() {
       setError(err instanceof Error ? err.message : String(err));
       setNotice("打开工程失败");
     }
+  }
+
+  async function handleOpenProject() {
+    const path = await chooseProjectFile();
+    if (path) await openProjectFromPath(path);
   }
 
   async function handleExtractAudio() {
@@ -530,8 +573,10 @@ function App() {
             selectedSubtitle={selectedSubtitle}
             subtitleLines={subtitleLines}
             subtitleStyle={subtitleStyle}
+            canvasPresetId={canvasPresetId}
             onSubtitleLinesChange={commitSubtitleLines}
             onSubtitleStyleChange={setSubtitleStyle}
+            onCanvasPresetChange={setCanvasPresetId}
             onUndo={undoSubtitleChange}
             selectedModel={selectedModel}
             selectedModelId={selectedModelId}
@@ -843,9 +888,11 @@ function StyleResetButton({ label, onClick }: { label: string; onClick: () => vo
 function Editor({
   audioPath,
   asrSummary,
+  canvasPresetId,
   currentProject,
   mediaInfo,
   onExtractAudio,
+  onCanvasPresetChange,
   onImportVideo,
   onModelChange,
   onExport,
@@ -864,9 +911,11 @@ function Editor({
 }: {
   audioPath: string | null;
   asrSummary: string | null;
+  canvasPresetId: CanvasPreset["id"];
   currentProject: ProjectInfo | null;
   mediaInfo: MediaInfo | null;
   onExtractAudio: () => void;
+  onCanvasPresetChange: (preset: CanvasPreset["id"]) => void;
   onImportVideo: () => void;
   onModelChange: (modelId: string) => void;
   onExport: (format: "srt" | "ass" | "mp4") => void;
@@ -889,7 +938,6 @@ function Editor({
   const [duration, setDuration] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
   const [exportFormat, setExportFormat] = useState<"srt" | "ass" | "mp4">("mp4");
-  const [canvasPresetId, setCanvasPresetId] = useState<CanvasPreset["id"]>("source");
   const [editingSubtitleId, setEditingSubtitleId] = useState<string | null>(null);
   const [editingText, setEditingText] = useState("");
   const [isCanvasEditing, setIsCanvasEditing] = useState(false);
@@ -1081,7 +1129,7 @@ function Editor({
               <button
                 className={canvasPreset.id === preset.id ? "active" : ""}
                 key={preset.id}
-                onClick={() => setCanvasPresetId(preset.id)}
+                onClick={() => onCanvasPresetChange(preset.id)}
                 title={`${preset.label} 画布`}
                 type="button"
               >

@@ -37,7 +37,10 @@ export interface ProjectInfo {
 export interface OpenProjectResult {
   project: ProjectInfo;
   media_path?: string | null;
+  audio_path?: string | null;
   subtitles: SubtitleLine[];
+  style?: Record<string, unknown>;
+  editor?: Record<string, unknown>;
 }
 
 export interface MediaInfo {
@@ -145,6 +148,10 @@ export async function openLocalProject(path: string) {
   return invoke<OpenProjectResult>("open_project_file", { path });
 }
 
+export async function getLaunchProjectFile() {
+  return invoke<string | null>("get_launch_project_file");
+}
+
 export async function saveProjectMedia(projectPath: string, mediaPath: string) {
   return invoke<void>("save_project_media", { projectPath, mediaPath });
 }
@@ -232,6 +239,33 @@ export async function saveProjectSubtitles(projectPath: string, subtitles: Subti
     request: {
       project_path: projectPath,
       subtitles,
+    },
+  });
+}
+
+export async function saveProjectState({
+  projectPath,
+  mediaPath,
+  audioPath,
+  subtitles,
+  style,
+  editor,
+}: {
+  projectPath: string;
+  mediaPath?: string | null;
+  audioPath?: string | null;
+  subtitles: SubtitleLine[];
+  style: Record<string, unknown>;
+  editor: Record<string, unknown>;
+}) {
+  return invoke<void>("save_project_state", {
+    request: {
+      project_path: projectPath,
+      media_path: mediaPath ?? null,
+      audio_path: audioPath ?? null,
+      subtitles,
+      style,
+      editor,
     },
   });
 }
