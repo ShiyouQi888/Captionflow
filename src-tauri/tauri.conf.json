@@ -1,0 +1,65 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "CaptionFlow",
+  "version": "0.1.0",
+  "identifier": "com.captionflow.desktop",
+  "build": {
+    "beforeDevCommand": "pnpm dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "pnpm build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "CaptionFlow 本地智能字幕",
+        "width": 1440,
+        "height": 900,
+        "minWidth": 1280,
+        "minHeight": 780,
+        "decorations": false,
+        "shadow": true
+      }
+    ],
+    "security": {
+      "csp": null,
+      "assetProtocol": {
+        "enable": true,
+        "scope": [
+          "**"
+        ]
+      }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "copyright": "Copyright © 2026 齐世有. 保留所有权利。",
+    "publisher": "齐世有",
+    "licenseFile": "../LICENSE.txt",
+    "shortDescription": "本地智能字幕编辑软件",
+    "longDescription": "CaptionFlow 是一款本地运行的智能字幕识别与编辑软件。作者：齐世有（blacklaw@foxmail.com）。开源组件包括 Tauri、React、Rust、FFmpeg 与 Qwen3-ASR。",
+    "resources": {
+      "../python/asr_worker.py": "python/asr_worker.py",
+      "../python/requirements-qwen-asr.txt": "python/requirements-qwen-asr.txt",
+      "../python/runtime": "runtime",
+      "../tools/ffmpeg": "tools/ffmpeg"
+    },
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "windows": {
+      "nsis": {
+        "languages": ["SimpChinese"],
+        "displayLanguageSelector": false,
+        "installerIcon": "icons/icon.ico",
+        "uninstallerIcon": "icons/icon.ico",
+        "startMenuFolder": "CaptionFlow 本地智能字幕"
+      }
+    }
+  }
+}

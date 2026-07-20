@@ -1,0 +1,38 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+output/
+src-tauri/target/
+.playwright-cli/
+
+# Generated local AI runtime, model weights and bundled media binaries.
+python/.venv-qwen313/
+python/__pycache__/
+python/runtime/*
+!python/runtime/.gitkeep
+python/models/*
+!python/models/.gitkeep
+tools/ffmpeg/
+*.msi
+*-setup.exe
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
