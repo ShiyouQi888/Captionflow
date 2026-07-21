@@ -33,7 +33,9 @@ $getPip = Join-Path $env:TEMP "get-pip.py"
 Invoke-WebRequest -Uri "https://bootstrap.pypa.io/get-pip.py" -OutFile $getPip
 & $python $getPip
 & $python -m pip install --no-cache-dir --upgrade pip setuptools wheel
+& $python -m pip uninstall --yes torchvision
 & $python -m pip install --no-cache-dir -r (Join-Path $pythonRoot "requirements-qwen-asr.txt")
+& $python -c "import importlib.util; assert importlib.util.find_spec('torchvision') is None, 'torchvision must not be bundled for the audio-only runtime'"
 
 function Copy-QwenModel([string]$name) {
     $destination = Join-Path $modelsRoot $name

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
 import platform
 import re
+import subprocess
 import sys
 import traceback
 import wave
@@ -29,15 +31,50 @@ def load_request(path: str) -> dict[str, Any]:
         return json.load(file)
 
 
+def remove_broken_torchvision() -> bool:
+    """Remove an optional torchvision install when its native operators do not match torch."""
+    try:
+        import torchvision  # noqa: F401
+        return False
+    except ModuleNotFoundError:
+        return False
+    except RuntimeError as exc:
+        if "torchvision::nms does not exist" not in str(exc):
+            raise
+
+    result = subprocess.run(
+        [sys.executable, "-m", "pip", "uninstall", "-y", "torchvision"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            "检测到不兼容的 torchvision，且自动修复失败。请重新安装 CaptionFlow 完整离线版。"
+        )
+    importlib.invalidate_caches()
+    for module_name in list(sys.modules):
+        if module_name == "torchvision" or module_name.startswith("torchvision."):
+            sys.modules.pop(module_name, None)
+    return True
+
+
 def import_runtime() -> tuple[Any, Any]:
     try:
         import torch
+        remove_broken_torchvision()
         from qwen_asr import Qwen3ASRModel
     except ModuleNotFoundError as exc:
         missing = exc.name or "qwen-asr"
         raise RuntimeError(
             f"识别运行时不完整，缺少依赖：{missing}。请重新安装 CaptionFlow 完整离线版。"
         ) from exc
+    except RuntimeError as exc:
+        if "torchvision::nms does not exist" in str(exc):
+            raise RuntimeError(
+                "检测到不兼容的 torchvision 组件。请关闭 CaptionFlow 后重新打开并再次识别。"
+            ) from exc
+        raise
 
     return torch, Qwen3ASRModel
 
