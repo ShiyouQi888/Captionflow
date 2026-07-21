@@ -1046,10 +1046,10 @@ function Editor({
       if (chunks.length <= 1) return [line];
       const start = timestampToMilliseconds(line.start);
       const end = timestampToMilliseconds(line.end);
-      const totalWeight = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+      const totalWeight = chunks.reduce((sum, chunk) => sum + captionReadingWeight(chunk), 0);
       let cursor = start;
       return chunks.map((chunk, index) => {
-        const next = index === chunks.length - 1 ? end : cursor + Math.round((end - start) * (chunk.length / totalWeight));
+        const next = index === chunks.length - 1 ? end : cursor + Math.round((end - start) * (captionReadingWeight(chunk) / totalWeight));
         const segment = { ...line, id: index === 0 ? line.id : `${line.id}-flow-${index}-${Date.now()}`, text: chunk, start: formatSubtitleTimestamp(cursor), end: formatSubtitleTimestamp(next), health: "good" as const };
         cursor = next;
         return segment;
@@ -1330,14 +1330,39 @@ function formatDuration(seconds?: number | null) {
 }
 
 function cleanCaptionText(text: string) {
-  return text
-    .replace(/[，。！？；：、,.!?;:"'“”‘’()（）\[\]【】{}<>《》…—–\-·~`]+/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (hasWordBoundaries(normalized)) {
+    return normalized
+      .replace(/[，。！？；：、,.!?;:"“”‘’()（）\[\]【】{}<>《》…—–·~`]+/g, "")
+      .replace(/(^|[^\p{L}\p{N}])['-]+|['-]+(?=$|[^\p{L}\p{N}])/gu, "$1")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+  return normalized.replace(/[，。！？；：、,.!?;:"'“”‘’()（）\[\]【】{}<>《》…—–\-·~`]+/g, "").trim();
 }
 
 function splitCaptionForReading(text: string, maximumLength: number) {
-  const normalized = text.replace(/\s+/g, "").trim();
+  const spaced = text.replace(/\s+/g, " ").trim();
+  if (hasWordBoundaries(spaced)) {
+    const chunks: string[] = [];
+    const words = spaced.split(" ");
+    const maxWords = Math.max(5, Math.floor(maximumLength / 2));
+    let buffer: string[] = [];
+    const flush = () => {
+      if (buffer.length) chunks.push(buffer.join(" "));
+      buffer = [];
+    };
+    for (const word of words) {
+      const candidate = [...buffer, word].join(" ");
+      if (buffer.length >= 3 && (buffer.length >= maxWords || candidate.length > 42)) flush();
+      buffer.push(word);
+      if (/[.!?。！？]$/.test(word) && buffer.length >= 2) flush();
+      else if (/[,;:，；：]$/.test(word) && buffer.length >= 4 && buffer.join(" ").length >= 24) flush();
+    }
+    flush();
+    return chunks;
+  }
+  const normalized = spaced.replace(/\s+/g, "");
   if (normalized.length <= maximumLength) return normalized ? [normalized] : [];
   const chunks: string[] = [];
   let remaining = normalized;
@@ -1350,6 +1375,14 @@ function splitCaptionForReading(text: string, maximumLength: number) {
   }
   if (remaining) chunks.push(remaining);
   return chunks.filter(Boolean);
+}
+
+function hasWordBoundaries(text: string) {
+  return text.includes(" ") && text.split(" ").filter(Boolean).length >= 2;
+}
+
+function captionReadingWeight(text: string) {
+  return hasWordBoundaries(text) ? text.split(" ").filter(Boolean).length : text.length;
 }
 
 function timestampToMilliseconds(timestamp: string) {

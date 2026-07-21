@@ -14,12 +14,33 @@ from typing import Any
 
 
 CAPTION_PUNCTUATION = re.compile(r"[，。！？；：、,.!?;:\"'“”‘’()（）\[\]【】{}<>《》…—–\-·~`]+")
+SPACED_CAPTION_PUNCTUATION = re.compile(r"[，。！？；：、,.!?;:\"“”‘’()（）\[\]【】{}<>《》…—–·~`]+")
+SENTENCE_ENDINGS = "。！？!?"
+CLAUSE_BREAKS = "，,、；;：:"
 
 
 def clean_caption_text(text: str) -> str:
     """Keep spoken words only in the subtitle text while retaining raw text for alignment."""
-    without_punctuation = CAPTION_PUNCTUATION.sub("", text)
-    return re.sub(r"\s+", " ", without_punctuation).strip()
+    normalized = re.sub(r"\s+", " ", text).strip()
+    if uses_word_boundaries(normalized):
+        # Keep apostrophes and hyphens only when they remain inside a word.
+        normalized = SPACED_CAPTION_PUNCTUATION.sub("", normalized)
+        normalized = re.sub(r"(?<!\w)['-]|['-](?!\w)", "", normalized)
+        return re.sub(r"\s+", " ", normalized).strip()
+    return re.sub(r"\s+", " ", CAPTION_PUNCTUATION.sub("", normalized)).strip()
+
+
+def uses_word_boundaries(text: str) -> bool:
+    """Detect languages that should be split on word boundaries instead of characters."""
+    return len(re.findall(r"\S+", text)) >= 2 and bool(re.search(r"\s", text))
+
+
+def caption_weight(text: str) -> int:
+    return max(1, len(re.findall(r"\S+", text)) if uses_word_boundaries(text) else len(text))
+
+
+def caption_is_long(text: str) -> bool:
+    return len(re.findall(r"\S+", text)) > 8 if uses_word_boundaries(text) else len(text) > 20
 
 
 def write_json(payload: dict[str, Any]) -> None:
@@ -159,11 +180,15 @@ def audio_duration_ms(path: Path) -> int:
 
 
 def caption_chunks(text: str, max_chars: int = 18) -> list[str]:
+    normalized = re.sub(r"\s+", " ", text).strip()
+    if uses_word_boundaries(normalized):
+        return spaced_caption_chunks(normalized)
+
     chunks: list[str] = []
     buffer = ""
-    break_chars = "。！？!?；;，,、"
+    break_chars = f"{SENTENCE_ENDINGS}{CLAUSE_BREAKS}"
 
-    for char in text.strip():
+    for char in normalized:
         buffer += char
         if char in break_chars and len(buffer) >= 6:
             chunks.append(buffer.strip())
@@ -182,6 +207,32 @@ def caption_chunks(text: str, max_chars: int = 18) -> list[str]:
     return [chunk for chunk in chunks if chunk]
 
 
+def spaced_caption_chunks(text: str, max_words: int = 8, max_chars: int = 42) -> list[str]:
+    """Split word-based languages without ever cutting a word or a contraction."""
+    chunks: list[str] = []
+    words: list[str] = []
+
+    def flush() -> None:
+        nonlocal words
+        if words:
+            chunks.append(" ".join(words).strip())
+        words = []
+
+    for word in text.split():
+        candidate = " ".join([*words, word])
+        if words and len(words) >= 3 and (len(words) >= max_words or len(candidate) > max_chars):
+            flush()
+        words.append(word)
+        current = " ".join(words)
+        if word[-1:] in SENTENCE_ENDINGS and len(words) >= 2:
+            flush()
+        elif word[-1:] in CLAUSE_BREAKS and len(words) >= 4 and len(current) >= 24:
+            flush()
+
+    flush()
+    return [chunk for chunk in chunks if chunk]
+
+
 def timestamps_include_text(timestamps: list[Any]) -> bool:
     for item in timestamps:
         if isinstance(item, dict) and any(item.get(key) for key in ("text", "sentence", "word")):
@@ -191,6 +242,20 @@ def timestamps_include_text(timestamps: list[Any]) -> bool:
         if str(value_from_result(item, "text", "")).strip():
             return True
     return False
+
+
+def join_timestamp_tokens(parts: list[str]) -> str:
+    """Join ASR timestamp tokens while restoring word spacing for space-delimited languages."""
+    result = ""
+    for part in parts:
+        token = str(part).strip()
+        if not token:
+            continue
+        if result and not result.endswith((" ", "'", "-")) and not token.startswith(("'", "-", ",", ".", "!", "?", ";", ":")):
+            if re.search(r"[\w\u00c0-\u024f]$", result) and re.match(r"[\w\u00c0-\u024f]", token):
+                result += " "
+        result += token
+    return result.strip()
 
 
 def segments_from_timestamps(timestamps: list[Any], reference_text: str) -> list[dict[str, Any]]:
@@ -203,12 +268,10 @@ def segments_from_timestamps(timestamps: list[Any], reference_text: str) -> list
     buffer: list[str] = []
     start_ms = tokens[0]["start_ms"]
     end_ms = start_ms
-    reference_index = 0
-    punctuation = "。！？!?；;，,、"
 
     def flush() -> None:
         nonlocal buffer, start_ms, end_ms
-        raw_text = "".join(buffer).strip()
+        raw_text = join_timestamp_tokens(buffer)
         text = clean_caption_text(raw_text)
         if not text:
             buffer = []
@@ -226,9 +289,9 @@ def segments_from_timestamps(timestamps: list[Any], reference_text: str) -> list
                 "words": [],
                 "health": {
                     "score": 100,
-                    "too_long": len(text) > 20,
+                    "too_long": caption_is_long(text),
                     "too_fast": False,
-                    "suggest_split": len(text) > 20,
+                    "suggest_split": caption_is_long(text),
                 },
             }
         )
@@ -239,22 +302,17 @@ def segments_from_timestamps(timestamps: list[Any], reference_text: str) -> list
         if buffer and token_start - end_ms > 700:
             flush()
             start_ms = token_start
-        while reference_index < len(reference_text) and reference_text[reference_index] in punctuation:
-            buffer.append(reference_text[reference_index])
-            reference_index += 1
+        candidate = join_timestamp_tokens([*buffer, token["text"]])
+        if buffer and (caption_is_long(clean_caption_text(candidate)) or (uses_word_boundaries(candidate) and len(re.findall(r"\S+", candidate)) > 8)):
             flush()
             start_ms = token_start
         buffer.append(token["text"])
-        reference_index += len(token["text"])
         end_ms = max(end_ms, token["end_ms"])
-        text = "".join(buffer).strip()
-        if (text and text[-1] in "。！？!?；;") or len(text) >= 18:
+        text = join_timestamp_tokens(buffer)
+        if (text and text[-1] in SENTENCE_ENDINGS) or (text and text[-1] in CLAUSE_BREAKS and len(buffer) >= 4):
             flush()
             start_ms = end_ms
 
-    while reference_index < len(reference_text) and reference_text[reference_index] in punctuation:
-        buffer.append(reference_text[reference_index])
-        reference_index += 1
     flush()
     return segments
 
@@ -265,7 +323,7 @@ def segments_from_text(text: str, duration_ms: int) -> list[dict[str, Any]]:
         return []
 
     duration_ms = max(duration_ms, len(chunks) * 800)
-    total_weight = sum(len(chunk) for chunk in chunks)
+    total_weight = sum(caption_weight(chunk) for chunk in chunks)
     cursor = 0
     segments: list[dict[str, Any]] = []
     for index, chunk in enumerate(chunks):
@@ -273,7 +331,7 @@ def segments_from_text(text: str, duration_ms: int) -> list[dict[str, Any]]:
         if index == len(chunks) - 1:
             end = duration_ms
         else:
-            allocation = max(800, round(duration_ms * len(chunk) / total_weight))
+            allocation = max(800, round(duration_ms * caption_weight(chunk) / total_weight))
             end = min(duration_ms, cursor + min(allocation, remaining))
         segments.append(
             {
@@ -287,9 +345,9 @@ def segments_from_text(text: str, duration_ms: int) -> list[dict[str, Any]]:
                 "words": [],
                 "health": {
                     "score": 100,
-                    "too_long": len(chunk) > 20,
+                    "too_long": caption_is_long(chunk),
                     "too_fast": False,
-                    "suggest_split": len(chunk) > 20,
+                    "suggest_split": caption_is_long(chunk),
                 },
             }
         )
